@@ -1,0 +1,207 @@
+// Klairo – Phase 0 database schema
+// Provider: PostgreSQL (Neon / Supabase / local)
+// Switch DATABASE_URL to change environments — no code changes needed.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────
+// Auth.js v5 required tables
+// ─────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime?
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  accounts    Account[]
+  sessions    Session[]
+  workspace   Workspace?
+  preferences UserPreferences?
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ─────────────────────────────────────────────
+// Klairo domain tables
+// ─────────────────────────────────────────────
+
+// One workspace per user. The workspace is the root container for all
+// trader data: watchlists, scans, alerts, and setups.
+model Workspace {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  name      String   @default("My Workspace")
+  // Extensible settings blob (chart defaults, layout prefs, etc.)
+  settings  Json     @default("{}")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  watchlists Watchlist[]
+  savedScans SavedScan[]
+  alerts     Alert[]
+  setups     Setup[]
+}
+
+// A named list of ticker symbols the user wants to monitor.
+model Watchlist {
+  id          String   @id @default(cuid())
+  workspaceId String
+  name        String
+  // Ordered list of US equity symbols e.g. ["AAPL", "NVDA", "TSLA"]
+  symbols     String[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+}
+
+// A saved scanner definition. Phase 2 will populate `definition` with a
+// typed rule tree; for now it's an extensible JSON blob.
+// No default: callers must always provide a definition. An empty scan
+// definition is not a valid state and should fail explicitly.
+model SavedScan {
+  id          String   @id @default(cuid())
+  workspaceId String
+  name        String
+  // Typed scan rule tree — see Phase 2 scan engine for schema
+  definition  Json
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+}
+
+enum AlertStatus {
+  ACTIVE
+  TRIGGERED
+  DISABLED
+  SNOOZED
+}
+
+// Distinguishes the four alert types from Phase 4 scope.
+// Stored as a first-class column so the alert engine can query by type
+// without parsing the condition JSON blob.
+enum AlertType {
+  PRICE      // Triggers when a symbol crosses a price level
+  INDICATOR  // Triggers when an indicator crosses a threshold
+  SCAN       // Triggers when a saved scan returns results
+  WATCHLIST  // Triggers when any symbol in a watchlist meets a condition
+}
+
+// A saved alert definition. Phase 4 will build the evaluation engine.
+// `condition` is a typed JSON blob whose schema will be defined in Phase 4;
+// `type` makes it queryable without parsing condition.
+model Alert {
+  id          String      @id @default(cuid())
+  workspaceId String
+  // Nullable: PRICE and INDICATOR alerts are symbol-specific;
+  // SCAN and WATCHLIST alerts are not tied to a single symbol.
+  symbol      String?
+  name        String?
+  type        AlertType   @default(PRICE)
+  // Typed alert condition — see Phase 4 alert engine for schema
+  condition   Json        @default("{}")
+  status      AlertStatus @default(ACTIVE)
+  triggeredAt DateTime?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+}
+
+enum SetupStatus {
+  WATCHING
+  ENTERED
+  STOPPED_OUT
+  TARGET_HIT
+  INVALIDATED
+  ARCHIVED
+}
+
+// A saved trade setup with notes and lifecycle tracking.
+// Phase 5 will build the full journal UI on top of this table.
+model Setup {
+  id          String      @id @default(cuid())
+  workspaceId String
+  symbol      String
+  // e.g. "1D", "4H", "1H"
+  timeframe   String?
+  status      SetupStatus @default(WATCHING)
+  tags        String[]
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  notes     Note[]
+}
+
+model Note {
+  id        String   @id @default(cuid())
+  setupId   String
+  content   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  setup Setup @relation(fields: [setupId], references: [id], onDelete: Cascade)
+}
+
+// Per-user display and workflow preferences.
+model UserPreferences {
+  id                String   @id @default(cuid())
+  userId            String   @unique
+  theme             String   @default("dark")
+  // e.g. "1D", "4H"
+  defaultTimeframe  String   @default("1D")
+  // Indicator keys to render by default e.g. ["EMA_20", "VWAP", "RSI"]
+  defaultIndicators String[] @default([])
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
